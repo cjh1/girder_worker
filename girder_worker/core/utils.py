@@ -296,7 +296,7 @@ def select_loop(exit_condition=lambda: False, close_output=lambda x: True,
 
             for ready_fd in readable:
                 buf = os.read(ready_fd, BUF_LEN)
-
+                print('read buff: %s' % buf)
                 if buf:
                     outputs[ready_fd].write(buf)
                 else:
@@ -311,10 +311,11 @@ def select_loop(exit_condition=lambda: False, close_output=lambda x: True,
                 # input generally happens first, but we should consider how to
                 # support non-blocking stream inputs in the future.
                 buf = inputs[ready_fd].read(BUF_LEN)
-
+                print('write buff: %s' % buf)
                 if buf:
                     os.write(ready_fd, buf)
                 else:   # end of stream
+                    print("end of stream")
                     wds.remove(ready_fd)
                     os.close(ready_fd)
 

@@ -223,6 +223,7 @@ def run(task, inputs, outputs, task_inputs, task_outputs, **kwargs):
         # Run select loop
         utils.select_loop(exit_condition=exit_condition, close_output=close_output,
                           outputs=opipes, inputs=ipipes)
+
     finally:
         # Close our stdout and stderr sockets
         if stdout:
