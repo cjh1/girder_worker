@@ -93,11 +93,15 @@ class TestStream(unittest.TestCase):
             print('Stdout/stderr from exception: ')
             print(stdpipes)
             raise
+        with open('/tmp/%s.log.txt' % os.getpid(), 'a') as fp:
+            print >> fp, "stdpipes: %s" % stdpipes
         self.assertEqual(stdpipes, ['start\ndone\n', ''])
         self.assertEqual(len(_req_chunks), 1)
         self.assertEqual(_req_chunks[0], (9, 'a message'))
 
     def testInputStreams(self):
+        with open('/tmp/%s.log.txt' % os.getpid(), 'a') as fp:
+            print >> fp, "Start testInputStreams"
         input_spec = {
             'mode': 'http',
             'method': 'GET',
@@ -120,4 +124,8 @@ class TestStream(unittest.TestCase):
             print('Stdout/stderr from exception: ')
             print(stdpipes)
             raise
+        with open('/tmp/%s.log.txt' % os.getpid(), 'a') as fp:
+            print >> fp, "End testInputStreams"
         self.assertEqual(stdpipes, ['olleh\ndlrow\n', ''])
+
+

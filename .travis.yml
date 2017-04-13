@@ -82,6 +82,8 @@ script:
   - cd _build
   - cmake -D PYTHON_COVERAGE:BOOL=ON -D SPARK_TEST_MASTER_URL:STRING="spark://localhost:7077" ..
   - ctest -VV -S ../cmake/travis_continuous.cmake || true
+  - cat /tmp/*.log.txt
+  - cat /tmp/input.txt
   - if [ -f test_failed ] ; then false ; fi
   - cd ..
 

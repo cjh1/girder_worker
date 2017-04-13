@@ -289,14 +289,22 @@ def select_loop(exit_condition=lambda: False, close_output=lambda x: True,
     rds = [fd for fd in outputs.keys() if isinstance(fd, int)]
     wds, fifos = _setup_input_pipes(inputs)
 
+    with open('/tmp/%s.log.txt' % os.getpid(), 'a') as fp:
+        print >> fp, 'rds: %s' % rds
+        print >> fp, 'wds: %s' % wds
+
+
     try:
         while True:
             # get ready pipes
             readable, writable, _ = select.select(rds, wds, (), 0)
 
+            exit = exit_condition()
+
             for ready_fd in readable:
                 buf = os.read(ready_fd, BUF_LEN)
-
+                with open('/tmp/%s.log.txt' % os.getpid(), 'a') as fp:
+                    print >> fp, 'read buff: %s' % buf
                 if buf:
                     outputs[ready_fd].write(buf)
                 else:
@@ -311,19 +319,29 @@ def select_loop(exit_condition=lambda: False, close_output=lambda x: True,
                 # input generally happens first, but we should consider how to
                 # support non-blocking stream inputs in the future.
                 buf = inputs[ready_fd].read(BUF_LEN)
-
+                with open('/tmp/%s.log.txt' % os.getpid(), 'a') as fp:
+                    print >> fp, 'from: %s' % inputs[ready_fd]
+                    print >> fp, 'write buff: %s ' % buf
+                    print >> fp, 'fd: %s' % ready_fd
                 if buf:
                     os.write(ready_fd, buf)
                 else:   # end of stream
+                    #print("end of stream")
                     wds.remove(ready_fd)
                     os.close(ready_fd)
 
             wds, fifos, inputs = _open_ipipes(wds, fifos, inputs)
-            # all pipes empty?s
+            # all pipes empty?
             empty = (not rds or not readable) and (not wds or not writable)
             # all pipes closed
             closed = not rds and not wds
-            if (empty and exit_condition()) or closed:
+            if (empty and exit):
+                with open('/tmp/%s.log.txt' % os.getpid(), 'a') as fp:
+                    print >> fp, 'empty: %s' % empty
+                    print >> fp, 'exit_condition: %s' % exit
+                    print >> fp, 'closed: %s' % closed
+                    print >> fp, 'rds: %s' % rds
+                    print >> fp, 'wds: %s' % wds
                 break
 
     finally:
@@ -366,6 +384,11 @@ def run_process(command, output_pipes=None, input_pipes=None):
     stdout = p.stdout.fileno()
     stderr = p.stderr.fileno()
     stdin = p.stdin.fileno()
+    with open('/tmp/%s.log.txt' % os.getpid(), 'a') as fp:
+        print >> fp, 'stdout: %s' % stdout
+        print >> fp, 'stderr: %s' % stderr
+        print >> fp, 'stdin: %s' % stdin
+
     output_pipes[stdout] = output_pipes.get(
         '_stdout', WritePipeAdapter({}, sys.stdout))
     output_pipes[stderr] = output_pipes.get(
