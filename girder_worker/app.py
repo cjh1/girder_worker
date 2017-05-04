@@ -4,6 +4,7 @@ from celery import Celery, __version__
 from distutils.version import LooseVersion
 from celery.signals import (task_prerun, task_postrun,
                             task_failure, task_success, worker_ready)
+from celery.task.control import inspect
 from .utils import JobStatus
 
 
@@ -94,7 +95,10 @@ def gw_task_prerun(task=None, sender=None, task_id=None,
 @task_success.connect
 def gw_task_success(sender=None, **rest):
     try:
-        _update_status(sender, JobStatus.SUCCESS)
+        status = JobStatus.SUCCESS
+        if is_revoked(sender):
+            status = JobStatus.CANCELED
+        _update_status(sender, status)
     except AttributeError:
         pass
 
@@ -124,6 +128,35 @@ def gw_task_postrun(task=None, sender=None, task_id=None,
         task.job_manager._redirectPipes(False)
     except AttributeError:
         pass
+
+
+# Access to the correct "Inspect" instance for this worker
+_inspector = None
+
+
+def _worker_inspector(task):
+    global _inspector
+    if _inspector is None:
+        _inspector = inspect([task.request.hostname])
+
+    return _inspector
+
+
+# Get this list of currently revoked tasks for this worker
+def _revoked_tasks(task):
+    return _worker_inspector(task).revoked()[task.request.hostname]
+
+
+def is_revoked(task):
+    """
+    Utility function to check is a task has been revoked.
+
+    :param task: The task.
+    :type task: celery.app.task.Task
+    :return True, if this task is in the revoked list for this worker, False
+            otherwise.
+    """
+    return task.request.id in _revoked_tasks(task)
 
 
 class _CeleryConfig:
