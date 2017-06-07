@@ -11,9 +11,9 @@ class DemultiplexerAdapterPushAdapter(object):
         self._adapter = adapter
 
     def _read_header(self):
-        bytes_to_read = min(8 - self._header_bytes_read, len(self._data))
-        self._header += self._data[:bytes_to_read]
-        self._data = self._data[bytes_to_read:]
+        bytes_to_read = min(8 - self._header_bytes_read, self._data_length-self._data_offset)
+        self._header += self._data[self._data_offset:self._data_offset+bytes_to_read]
+        self._data_offset += bytes_to_read
         self._header_bytes_read += bytes_to_read
 
         if self._header_bytes_read == 8:
@@ -22,15 +22,17 @@ class DemultiplexerAdapterPushAdapter(object):
             return payload_size
 
     def _read_payload(self):
-        bytes_to_read = min(self._payload_size - self._payload_bytes_read, len(self._data))
-        self._adapter.write(self._data[:bytes_to_read])
-        self._data = self._data[bytes_to_read:]
+        bytes_to_read = min(self._payload_size - self._payload_bytes_read, self._data_length-self._data_offset)
+        self._adapter.write(self._data[self._data_offset:self._data_offset+bytes_to_read])
+        self._data_offset += bytes_to_read
         self._payload_bytes_read += bytes_to_read
 
     def write(self, data):
         self._data = data
+        self._data_length = len(data)
+        self._data_offset = 0
 
-        while len(self._data) > 0:
+        while self._data_length - self._data_offset > 0:
             # We are reading the header
             if self._header_bytes_read < 8:
                 self._payload_size = self._read_header()
