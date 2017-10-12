@@ -8,7 +8,7 @@ from girder_worker import logger
 from girder_worker.core import utils
 from girder_worker.plugins.docker.stream_adapter import DockerStreamPushAdapter
 from girder_worker.plugins.docker import nvidia
-
+from girder_worker.plugins.docker.tasks.transform import Connect, WriteStreamConnector, ReadStreamConnector, FilenoReader
 
 BLACKLISTED_DOCKER_RUN_ARGS = ['tty', 'detach']
 
@@ -26,7 +26,7 @@ def _pull_image(image):
         raise
 
 
-def _run_container(image, container_args, **kwargs):
+def _run_container(image, container_args,  **kwargs):
     # TODO we could allow configuration of non default socket
     client = docker.from_env(version='auto')
     if nvidia.is_nvidia_image(client.api, image):
@@ -40,8 +40,8 @@ def _run_container(image, container_args, **kwargs):
         logger.error(dex)
         raise
 
-
-def _run_select_loop(task, container, output_pipes, input_pipes):
+def _run_select_loop(task, container, read_stream_connectors, write_stream_connectors,
+                     stdout_push_adapter=None, stderr_push_adapter=None):
     stdout = None
     stderr = None
     try:
@@ -62,17 +62,24 @@ def _run_select_loop(task, container, output_pipes, input_pipes):
             container.reload()
             return container.status in ['exited', 'dead'] or task.canceled
 
-        def close_output(output):
-            return output not in (stdout.fileno(), stderr.fileno())
+        if stdout_push_adapter is None:
+            stdout_push_adapter = utils.WritePipeAdapter({}, sys.stdout)
+        stdout_reader = FilenoReader(stdout.fileno())
+        stdout_push_adapter = DockerStreamPushAdapter(stdout_push_adapter)
+        stdout_stream_connector = ReadStreamConnector(stdout_reader, stdout_push_adapter)
+        read_stream_connectors.append(stdout_stream_connector)
 
-        output_pipes[stdout.fileno()] = DockerStreamPushAdapter(output_pipes.get(
-            '_stdout', utils.WritePipeAdapter({}, sys.stdout)))
-        output_pipes[stderr.fileno()] = DockerStreamPushAdapter(output_pipes.get(
-            '_stderr', utils.WritePipeAdapter({}, sys.stderr)))
+        if stderr_push_adapter is None:
+            stderr_push_adapter = utils.WritePipeAdapter({}, sys.stderr)
+        stderr_reader = FilenoReader(stdout.fileno())
+        stderr_push_adapter = DockerStreamPushAdapter(stderr_push_adapter)
+        stderr_stream_connector = ReadStreamConnector(stderr_reader, stderr_push_adapter)
+        read_stream_connectors.append(stderr_stream_connector)
 
         # Run select loop
-        utils.select_loop(exit_condition=exit_condition, close_output=close_output,
-                          outputs=output_pipes, inputs=input_pipes)
+        utils.select_loop(exit_condition=exit_condition,
+                          readers=read_stream_connectors,
+                          writes=write_stream_connectors)
 
         if task.canceled:
             try:
@@ -101,10 +108,28 @@ def _run_select_loop(task, container, output_pipes, input_pipes):
         if stderr:
             stderr.close()
 
+def _handle_streaming_args(args):
+    processed_arg = []
+    write_streams = []
+    read_streams = []
+    for arg in args:
+        if isinstance(arg, Connect):
+            connector = arg.transform()
+            if isinstance(connector, WriteStreamConnector):
+                write_streams.append(connector)
+            else:
+                read_streams.append(connector)
+
+            arg = connector.path()
+
+        processed_arg.append(arg)
+
+    return (processed_arg, read_streams, write_streams)
+
 
 def _docker_run(task, image, pull_image=True, entrypoint=None, container_args=None,
-                volumes={}, remove_container=False, output_pipes={}, input_pipes={},
-                **kwargs):
+                volumes={}, remove_container=False, stdout_push_adapter=None,
+                stderr_push_adapter=None, **kwargs):
 
     if pull_image:
         logger.info('Pulling Docker image: %s', image)
@@ -128,9 +153,13 @@ def _docker_run(task, image, pull_image=True, entrypoint=None, container_args=No
     if entrypoint is not None:
         run_kwargs['entrypoint'] = entrypoint
 
+    (container_args, read_streams, write_streams) = \
+        _handle_streaming_args(container_args)
+
     container = _run_container(image, container_args, **run_kwargs)
     try:
-        _run_select_loop(task, container, output_pipes, input_pipes)
+        _run_select_loop(task, container, read_streams, write_streams,
+                         stdout_push_adapter, stderr_push_adapter)
     finally:
         if container and remove_container:
             container.remove()
@@ -138,8 +167,9 @@ def _docker_run(task, image, pull_image=True, entrypoint=None, container_args=No
 
 @app.task(bind=True)
 def docker_run(task, image, pull_image=True, entrypoint=None, container_args=None,
-               volumes={}, remove_container=False, output_pipes={}, input_pipes={},
-               **kwargs):
+               volumes={}, remove_container=False, stdout_push_adapter=None,
+               stderr_push_adapter=None,  **kwargs):
     return _docker_run(
         task, image, pull_image, entrypoint, container_args, volumes,
-        remove_container, output_pipes, input_pipes, **kwargs)
+        remove_container, stdout_push_adapter,
+        stderr_push_adapter, **kwargs)
