@@ -4,7 +4,19 @@ import re
 from girder_worker.core import TaskSpecValidationError, utils
 from girder_worker.core.io import make_stream_fetch_adapter, make_stream_push_adapter
 from .tasks import _docker_run
-from .tasks.transform import WriteStreamConnector, FilenoWriter, NamedPipe, ProgressPipe, ReadStreamConnector
+from .tasks.io import (
+    WriteStreamConnector,
+    NamedPipe,
+    ReadStreamConnector
+)
+
+from .tasks.transform import (
+    ProgressPipe,
+    ContainerStdOut,
+    ContainerStdErr
+)
+from girder_worker.plugins.docker.tasks.io import NamedPipeReader
+
 
 DATA_VOLUME = '/mnt/girder_worker/data'
 
@@ -109,8 +121,7 @@ def _setup_streams(task_inputs, inputs, task_outputs, outputs, tempdir, job_mgr,
     #ipipes = {}
     #opipes = {}
 
-    write_stream_connectors = []
-    read_stream_connectors = []
+    stream_connectors = []
 
 
     def stream_pipe_path(id, spec, bindings):
@@ -132,30 +143,30 @@ def _setup_streams(task_inputs, inputs, task_outputs, outputs, tempdir, job_mgr,
     for id, spec in task_inputs.iteritems():
 
         path = stream_pipe_path(id, spec, inputs)
-
         # We have a streaming input
         if path is not None:
             # TODO not sure what we do call transform????
             writer = NamedPipe(path)
             connector = WriteStreamConnector(make_stream_fetch_adapter(inputs[id]), writer)
-            write_stream_connectors.append(connector)
+            stream_connectors.append(connector)
             # Don't open from this side, must be opened for reading first!
 
     # handle stream outputs
     for id, spec in task_outputs.iteritems():
-        path = stream_pipe_path(id, spec, inputs)
+        path = stream_pipe_path(id, spec, outputs)
         if path is not None:
-            reader = NamedPipe(path).open()
+            # TODO how will this work for raw celery tasks
+            reader = NamedPipeReader(NamedPipe(path))
             connector = ReadStreamConnector(reader, make_stream_push_adapter(outputs[id]))
-            read_stream_connectors.append(connector)
+            stream_connectors.append(connector)
 
     # handle special stream output for job progress
     if progress_pipe and job_mgr:
         progress_pipe = ProgressPipe(os.path.join(tempdir, '.girder_progress'))
-        read_stream_connectors.append(progress_pipe.open())
+        stream_connectors.append(progress_pipe.open())
 
 
-    return (write_stream_connectors, read_stream_connectors)
+    return stream_connectors
 
 def _setup_std_streams(task_outputs, outputs):
     def push_adapter(id):
@@ -202,12 +213,21 @@ def run(task, inputs, outputs, task_inputs, task_outputs, **kwargs):
     job_mgr = kwargs.get('_job_manager')
     args = _expand_args(task.get('container_args', []), inputs, task_inputs, outputs, tempdir)
 
-    write_stream_connectors, read_stream_connectors = _setup_streams(
+    stream_connectors = _setup_streams(
         task_inputs, inputs, task_outputs, outputs, tempdir, job_mgr, progress_pipe)
-
 
     (stdout_fetch_adapter, stderr_fetch_adapter) \
         = _setup_std_streams(task_outputs, outputs)
+
+    # Connect up stdout and strerr ContainerStdOut() and ContainerStdErr() will be
+    # replaced with the real streams when the container is started.
+    if stdout_fetch_adapter is not None:
+        stream_connectors.append(ReadStreamConnector(ContainerStdOut(), stdout_fetch_adapter))
+    if stderr_fetch_adapter is not None:
+        stream_connectors.append(ReadStreamConnector(ContainerStdErr(), stderr_fetch_adapter))
+
+    #import rpdb
+    #rpdb.set_trace()
 
     entrypoint = None
     if 'entrypoint' in task:
@@ -224,10 +244,11 @@ def run(task, inputs, outputs, task_inputs, task_outputs, **kwargs):
     }
     add_input_volumes(inputs, volumes)
 
+
+
     _docker_run(celery_task, image, pull_image=pull_image, entrypoint=entrypoint,
                 container_args=args, volumes=volumes, remove_container=remove_container,
-                stdout_fetch_adapter, stderr_fetch_adapter,
-                output_pipes=opipes, input_pipes=ipipes, **extra_run_kwargs)
+                stream_connectors=stream_connectors, **extra_run_kwargs)
 
     for name, spec in task_outputs.iteritems():
         if spec.get('target') == 'filepath' and not spec.get('stream'):

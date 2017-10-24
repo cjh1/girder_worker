@@ -234,16 +234,16 @@ def select_loop(exit_condition=lambda: True, readers=None, writers=None):
             readable, writable, _ = select.select(readers, writers, (), 0.1)
 
             for ready in readable:
-                ready.read(BUF_LEN)
-                if ready.isclosed():
+                read = ready.read(BUF_LEN)
+                if read == 0:
                     readers.remove(ready)
 
             for ready in writable:
                 # TODO for now it's OK for the input reads to block since
                 # input generally happens first, but we should consider how to
                 # support non-blocking stream inputs in the future.
-                ready.write(BUF_LEN)
-                if ready.isclosed():
+                written = ready.write(BUF_LEN)
+                if written == 0:
                     writers.remove(ready)
 
 

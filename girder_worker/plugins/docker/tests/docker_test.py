@@ -9,9 +9,13 @@ import stat
 import sys
 import unittest
 
-from girder_worker.core import cleanup, run, io, TaskSpecValidationError
-from girder_worker.plugins.docker.executor import DATA_VOLUME
+try:
 
+    from girder_worker.core import cleanup, run, io, TaskSpecValidationError
+    from girder_worker.plugins.docker.executor import DATA_VOLUME
+except:
+    import traceback
+    traceback.print_exc()
 
 _tmp = None
 OUT_FD, ERR_FD = 100, 200
@@ -65,6 +69,8 @@ def _mockOsRead(fd, *args, **kwargs):
     elif fd == ERR_FD:
         return _err.read()
 
+def _close(self):
+    pass
 
 girder_worker.plugins.docker.executor.os.read = _mockOsRead
 
@@ -96,6 +102,8 @@ class TestDockerMode(unittest.TestCase):
         _reset_mocks()
 
     @mock.patch('docker.from_env', return_value=docker_client_mock)
+    @mock.patch('girder_worker.plugins.docker.tasks.FileDescriptorReader.close',
+                return_value=_close)
     def testDockerMode(self, *args):
         task = {
             'mode': 'docker',
@@ -334,6 +342,8 @@ class TestDockerMode(unittest.TestCase):
         self.assertEqual(mockPopen.call_count, 0)
 
     @mock.patch('docker.from_env', return_value=docker_client_mock)
+    @mock.patch('girder_worker.plugins.docker.tasks.FileDescriptorReader.close',
+                return_value=_close)
     def testOutputValidation(self, *args):
         task = {
             'mode': 'docker',
@@ -390,6 +400,8 @@ class TestDockerMode(unittest.TestCase):
             run(task, _celery_task=celery_task)
 
     @mock.patch('docker.from_env', return_value=docker_client_mock)
+    @mock.patch('girder_worker.plugins.docker.tasks.FileDescriptorReader.close',
+                return_value=_close)
     def testNamedPipes(self, *args):
         task = {
             'mode': 'docker',
@@ -429,6 +441,8 @@ class TestDockerMode(unittest.TestCase):
         self.assertTrue(stat.S_ISFIFO(os.stat(pipe).st_mode))
 
     @mock.patch('docker.from_env', return_value=docker_client_mock)
+    @mock.patch('girder_worker.plugins.docker.tasks.FileDescriptorReader.close',
+                return_value=_close)
     def testDockerRunArgs(self, *args):
         task = {
             'mode': 'docker',
@@ -469,7 +483,9 @@ class TestDockerMode(unittest.TestCase):
         self.assertFalse(kwargs['tty'])
 
     @mock.patch('docker.from_env', return_value=docker_client_mock)
-    def testOutputTemplate(self, from_env):
+    @mock.patch('girder_worker.plugins.docker.tasks.FileDescriptorReader.close',
+                 return_value=_close)
+    def testOutputTemplate(self, *args):
         task = {
             'mode': 'docker',
             'docker_image': 'test/test:latest',
