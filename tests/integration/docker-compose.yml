@@ -32,6 +32,8 @@ services:
       - 4445:4444
     volumes_from:
       - girder_worker_data_volume:rw
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - 'rabbit'
       - 'girder_worker_data_volume'
