@@ -1,11 +1,7 @@
 import os
-import sys
 import errno
 import stat
 import abc
-
-from girder_worker.app import app
-from girder_worker.core import utils
 
 
 class StreamConnector(object):
@@ -31,6 +27,7 @@ class StreamConnector(object):
         Close the stream connector, delegated to implementation.
         """
 
+    @abc.abstractmethod
     def fileno(self):
         """
         This method allows an instance of this class to used in the select call.
@@ -38,14 +35,22 @@ class StreamConnector(object):
         :returns The file descriptor that should be used to determine if the connector
                  has data to process.
         """
-        self.output.fileno()
+    def container_arg(self):
+        """
+        :returns A string that should be passed to the container as an argument in order
+                 to utilize this stream. For example a named pipe path.
+        """
+        return ''
 
 
 class WriteStreamConnector(StreamConnector):
     """
     WriteStreamConnector can be used to connect a read and write stream. The write
     side of the connection will be used in the select loop to trigger write i.e
-    the file description from the write stream will be used in the select call.
+    the file descriptor from the write stream will be used in the select call.
+
+    This is typically used to stream data to a named pipe that will be read inside
+    a container.
     """
 
     def fileno(self):
@@ -54,10 +59,7 @@ class WriteStreamConnector(StreamConnector):
 
         :returns The file descriptor for write(output) side of the connection.
         """
-        self._output.fileno()
-
-    def __repr__(self):
-        return repr(self._output)
+        return self.output.fileno()
 
     def write(self, n=65536):
         """
@@ -91,14 +93,28 @@ class WriteStreamConnector(StreamConnector):
         Closes the output side of this connector, followed by the input side.
         """
         self.output.close()
-        self.input.close()
+        if hasattr(self.input, 'close'):
+            self.input.close()
+
+    def container_arg(self):
+        """
+        :returns Returns any container arg associated with input side of the connector.
+        """
+
+        if hasattr(self.output, 'container_arg'):
+            return self.output.container_arg()
+
+        return ''
 
 
 class ReadStreamConnector(StreamConnector):
     """
     ReadStreamConnector can be used to connect a read and write stream. The read
     side of the connection will be used in the select loop to trigger write i.e
-    the file description from the read stream will be used in the select call.
+    the file descriptor from the read stream will be used in the select call.
+
+    This is typically used to stream data from a named pipe that is being written
+    to inside a container.
     """
 
     def fileno(self):
@@ -108,10 +124,7 @@ class ReadStreamConnector(StreamConnector):
         :returns The file descriptor for read(input) side of the connection.
         """
 
-        self.input.fileno()
-
-    def __repr__(self):
-        return repr(self.input)
+        return self.input.fileno()
 
     def read(self, n=65536):
         """
@@ -126,7 +139,10 @@ class ReadStreamConnector(StreamConnector):
         buf = self.input.read(n)
 
         if buf:
-            return self.output.write(buf)
+            self.output.write(buf)
+            # TODO PushAdapter/Writers should return number of bytes actually
+            # written.
+            return len(buf)
         else:
             self.close()
 
@@ -145,88 +161,49 @@ class ReadStreamConnector(StreamConnector):
         self.input.close()
         self.output.close()
 
-
-class Reader(object):
-    __metaclass__ = abc.ABCMeta
-
-    @abc.abstractmethod
-    def fileno(self):
+    def container_arg(self):
         """
-        This method allows an instance of this class to used in the select call.
-
-        :returns The file descriptor that should be used to determine if there data
-                 to read.
+        :returns A string that should be passed to the container as an argument in order
+                 to utilize this stream. For example a named pipe path.
         """
 
-    @abc.abstractmethod
-    def read(self, n):
-        """
-        :param The maximum number if bytes to read.
-        """
+        if hasattr(self.input, 'container_arg'):
+            return self.input.container_arg()
 
-    @abc.abstractmethod
-    def close(self):
-        """
-        Closes this reader.
-        """
-
-    def open(self):
-        pass
+        return ''
 
 
-class Writer(object):
-    __metaclass__ = abc.ABCMeta
-
-    @abc.abstractmethod
-    def fileno(self):
-        """
-        This method allows an instance of this class to used in the select call.
-
-        :returns The file descriptor that should be used to determine if there data
-                 to write.
-        """
-
-    @abc.abstractmethod
-    def write(self, n):
-        """
-        :param The maximum number if bytes to write.
-        """
-
-    @abc.abstractmethod
-    def close(self):
-        """
-        Closes this writer.
-        """
-
-    def open(self):
-        pass
-
-class FileDescriptorReader(Reader):
-    def __init__(self, fd=0):
+class FileDescriptorReader(object):
+    def __init__(self, fd):
         self._fd = fd
 
     def fileno(self):
         return self._fd
 
     def read(self, n):
-        return os.read(self._fd, n)
+        return os.read(self.fileno(), n)
 
     def close(self):
-        os.close(self._fd)
+        os.close(self.fileno())
 
-class FileDescriptorWriter(Writer):
-    def __init__(self, fd=0):
+
+class FileDescriptorWriter(object):
+    def __init__(self, fd):
         self._fd = fd
 
     def fileno(self):
         return self._fd
 
     def write(self, buf):
-        return os.write(self._fd, buf)
+        return os.write(self.fileno(), buf)
 
     def close(self):
-        os.close(self._fd)
+        os.close(self.fileno())
 
+class StdStreamReader(FileDescriptorReader):
+    def close(self):
+        # Bad thinks happend when you close stderr or stdout
+        pass
 
 class NamedPipe(object):
     def __init__(self, path):
@@ -234,7 +211,8 @@ class NamedPipe(object):
         self._fd = None
         os.mkfifo(self.path)
 
-    def open(self):
+    def open(self, flags):
+
         if self._fd is None:
             if not os.path.exists(self.path):
                 raise Exception('Input pipe does not exist: %s' % self._path)
@@ -242,7 +220,7 @@ class NamedPipe(object):
                 raise Exception('Input pipe must be a fifo object: %s' % self._path)
 
             try:
-                self._fd = os.open(self.path, os.O_WRONLY | os.O_NONBLOCK)
+                self._fd = os.open(self.path, flags)
             except OSError as e:
                 if e.errno != errno.ENXIO:
                     raise e
@@ -250,46 +228,37 @@ class NamedPipe(object):
     def fileno(self):
         return self._fd
 
-    def __repr__(self):
+    def container_arg(self):
         return self.path
 
 
-
-# TODO Do we need this???
-class DockerContainerNamedPipe(NamedPipe):
-    def __init__(self, outside_path, inside_path):
-        super(DockerContainerNamedPipe, self).__init__(outside_path)
-        self.container_path = inside_path
-
-    def __repr__(self):
-        return self.container_path
-
-
 class NamedPipeReader(FileDescriptorReader):
-    def __init__(self, pipe):
-        super(NamedPipeReader, self).__init__()
+    def __init__(self, pipe, container_path=None):
+        super(NamedPipeReader, self).__init__(None)
         self._pipe = pipe
+        self._container_path = container_path
 
     def open(self):
-        self._pipe.open()
+        self._pipe.open(os.O_RDONLY | os.O_NONBLOCK)
 
-    def __repr__(self):
-        return repr(self._pipe)
+    def container_arg(self):
+        return self._container_path
 
     def fileno(self):
         return self._pipe.fileno()
 
 
 class NamedPipeWriter(FileDescriptorWriter):
-    def __init__(self, pipe):
-        super(NamedPipeWriter, self).__init__()
+    def __init__(self, pipe, container_path=None):
+        super(NamedPipeWriter, self).__init__(None)
         self._pipe = pipe
+        self._container_path = container_path
 
     def open(self):
-        self._pipe.open()
+        self._pipe.open(os.O_WRONLY | os.O_NONBLOCK)
 
-    def __repr__(self):
-        return repr(self._pipe)
+    def container_arg(self):
+        return self._container_path
 
     def fileno(self):
         return self._pipe.fileno()

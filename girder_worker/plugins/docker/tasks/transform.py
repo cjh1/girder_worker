@@ -1,9 +1,5 @@
-import os
 import sys
 
-from girder_worker import utils
-
-from .io import ReadStreamConnector, WriteStreamConnector, NamedPipe, FileDescriptorReader
 
 # TODO This will move to girder_work_utils repo.
 class BaseTransform(object):
@@ -24,17 +20,16 @@ class BaseTransform(object):
         obj.__state__['kwargs'] = kwargs
         return obj
 
-
 class StdOut(BaseTransform):
-
     def transform(self):
-        return sys.stdout
+        from girder_worker.plugins.docker.io import StdStreamReader
+        return StdStreamReader(sys.stdout)
 
 
-class StdError(BaseTransform):
-
+class StdErr(BaseTransform):
     def transform(self):
-        return sys.stderr
+        from girder_worker.plugins.docker.io import StdStreamReader
+        return StdStreamReader(sys.stderr)
 
 
 class ContainerStdOut(BaseTransform):
@@ -42,26 +37,79 @@ class ContainerStdOut(BaseTransform):
     def transform(self):
         return self
 
+    def open(self):
+        # noop
+        pass
+
 
 class ContainerStdErr(BaseTransform):
 
     def transform(self):
         return self
 
+    def open(self):
+        # noop
+        pass
+
 
 class ProgressPipe(BaseTransform):
 
     def __init__(self, path):
         super(ProgressPipe, self).__init__()
-        self._pipe = NamedPipe(path)
+        self._path = path
 
     def transform(self, task):
+        from girder_worker import utils
+        from girder_worker.plugins.docker.io import (
+            NamedPipe,
+            NamedPipeReader,
+            ReadStreamConnector
+        )
         super(ProgressPipe, self).transform()
         job_mgr = task.job_manager
-        return ReadStreamConnector(FileDescriptorReader(self._pipe), utils.JobProgressAdapter(job_mgr))
+        pipe = NamedPipe(self.path)
+        return ReadStreamConnector(NamedPipeReader(pipe), utils.JobProgressAdapter(job_mgr))
 
-class NamedPipe(BaseTransform):
-    pass
+
+class NamedPipeBase(BaseTransform):
+    def __init__(self, inside_path, outside_path):
+        super(NamedPipeBase, self).__init__()
+
+        self.inside_path = inside_path
+        self.outside_path = outside_path
+
+
+class NamedInputPipe(NamedPipeBase):
+    """
+    A named pipe that read from within a docker container.
+    i.e. To stream data out of a container.
+    """
+    def __init__(self, inside_path, outside_path):
+        super(NamedInputPipe, self).__init__(inside_path, outside_path)
+
+    def transform(self):
+        from girder_worker.plugins.docker.io import (
+            NamedPipe,
+            NamedPipeWriter
+        )
+        pipe = NamedPipe(self.outside_path)
+        return NamedPipeWriter(pipe, self.inside_path)
+
+class NamedOutputPipe(NamedPipeBase):
+    """
+    A named pipe that written to from within a docker container.
+    i.e. To stream data out of a container.
+    """
+    def __init__(self, inside_path, outside_path):
+        super(NamedInputPipe, self).__init__(inside_path, outside_path)
+
+    def transform(self):
+        from girder_worker.plugins.docker.io import (
+            NamedPipe,
+            NamedPipeReader
+        )
+        pipe = NamedPipe(self.outside_path)
+        return NamedPipeReader(pipe, self.inside_path)
 
 class Connect(BaseTransform):
     def __init__(self, input, output):
@@ -70,23 +118,26 @@ class Connect(BaseTransform):
         self._output = output
 
     def transform(self):
-        if self.isinput():
+        from girder_worker.plugins.docker.io import (
+            WriteStreamConnector,
+            ReadStreamConnector,
+        )
+        if isinstance(self._output, NamedInputPipe):
             return WriteStreamConnector(self._input.transform(), self._output.transform())
         else:
             return ReadStreamConnector(self._input.transform(), self._output.transform())
 
-    def isinput(self):
-        return isinstance(self._output, NamedPipe)
+
 
 
 
 
 #
 # For example:
-# docker_run.delay(image, stream_connectors=[Connect(NamedPipe('my/input/pipe'), StdOut())]
+# docker_run.delay(image, stream_connectors=[Connect(NamedOutputPipe('my/pipe'), StdOut())]
 # docker_run.delay(image, stream_connectors=[Connect(ContainerStdOut(), StdErr())]
 # docker_run.delay(image, stream_connectors=[Connect(ContainerStdOut(), StdErr())]
-# docker_run.delay(image, stream_connectors=[Connect(GirderFile(id), NamedPipe(my/girder/pipe))]
+# docker_run.delay(image, stream_connectors=[Connect(GirderFile(id), NamedInputPipe(my/girder/pipe))]
 # docker_run.delay(image, stream_connectors=[ProgressPipe('write/your/progress/here')]
 # docker_run.delay(image, stream_connectors=[Connect(ContainerStdOut(), GirderFileId(id))]
 #                                           output                                                  input

@@ -8,7 +8,7 @@ from girder_worker import logger
 from girder_worker.core import utils
 from girder_worker.plugins.docker.stream_adapter import DockerStreamPushAdapter
 from girder_worker.plugins.docker import nvidia
-from girder_worker.plugins.docker.tasks.io import (
+from girder_worker.plugins.docker.io import (
     WriteStreamConnector,
     ReadStreamConnector,
     FileDescriptorReader
@@ -151,8 +151,8 @@ def _handle_streaming_args(args):
             else:
                 read_streams.append(connector)
 
-            # Use repr to convert argument to pass to the container
-            arg = repr(connector)
+            # Get any container argument associated with this stream
+            arg = connector.container_arg()
 
         processed_arg.append(arg)
 
@@ -192,6 +192,11 @@ def _docker_run(task, image, pull_image=True, entrypoint=None, container_args=No
             read_streams.append(connector)
         elif isinstance(connector, WriteStreamConnector):
             write_streams.append(connector)
+
+    # We need to open any read streams before starting the container, so the
+    # underling named pipes are opened for read.
+    for stream in read_streams:
+        stream.open()
 
     container = _run_container(image, container_args, **run_kwargs)
     try:

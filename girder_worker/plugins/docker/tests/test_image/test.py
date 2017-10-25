@@ -2,6 +2,10 @@ import sys
 import time
 import signal
 
+f = open('/mnt/girder_worker/data/log', 'w')
+f.write('here\n')
+f.flush()
+
 if len(sys.argv) == 3:
     mode = sys.argv[1]
     message = sys.argv[2]
@@ -12,8 +16,14 @@ if len(sys.argv) == 3:
         with open('/mnt/girder_worker/data/output_pipe', 'w') as fp:
             fp.write(message)
     elif mode == 'input_pipe':
+        f.write('before\n')
+        f.flush()
         with open('/mnt/girder_worker/data/input_pipe', 'r') as fp:
+            f.write('reading\n')
+            f.flush()
             print(fp.read())
+            f.write('read\n')
+            f.flush()
     elif mode == 'sigkill':
         time.sleep(30)
     elif mode == 'sigterm':

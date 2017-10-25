@@ -4,7 +4,7 @@ import re
 from girder_worker.core import TaskSpecValidationError, utils
 from girder_worker.core.io import make_stream_fetch_adapter, make_stream_push_adapter
 from .tasks import _docker_run
-from .tasks.io import (
+from girder_worker.plugins.docker.io import (
     WriteStreamConnector,
     NamedPipe,
     ReadStreamConnector
@@ -15,7 +15,10 @@ from .tasks.transform import (
     ContainerStdOut,
     ContainerStdErr
 )
-from girder_worker.plugins.docker.tasks.io import NamedPipeReader
+from girder_worker.plugins.docker.io import (
+    NamedPipeReader,
+    NamedPipeWriter
+)
 
 
 DATA_VOLUME = '/mnt/girder_worker/data'
@@ -146,7 +149,7 @@ def _setup_streams(task_inputs, inputs, task_outputs, outputs, tempdir, job_mgr,
         # We have a streaming input
         if path is not None:
             # TODO not sure what we do call transform????
-            writer = NamedPipe(path)
+            writer = NamedPipeWriter(NamedPipe(path))
             connector = WriteStreamConnector(make_stream_fetch_adapter(inputs[id]), writer)
             stream_connectors.append(connector)
             # Don't open from this side, must be opened for reading first!
@@ -243,8 +246,6 @@ def run(task, inputs, outputs, task_inputs, task_outputs, **kwargs):
         }
     }
     add_input_volumes(inputs, volumes)
-
-
 
     _docker_run(celery_task, image, pull_image=pull_image, entrypoint=entrypoint,
                 container_args=args, volumes=volumes, remove_container=remove_container,

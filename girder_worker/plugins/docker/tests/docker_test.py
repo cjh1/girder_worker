@@ -9,13 +9,9 @@ import stat
 import sys
 import unittest
 
-try:
+from girder_worker.core import cleanup, run, io, TaskSpecValidationError
+from girder_worker.plugins.docker.executor import DATA_VOLUME
 
-    from girder_worker.core import cleanup, run, io, TaskSpecValidationError
-    from girder_worker.plugins.docker.executor import DATA_VOLUME
-except:
-    import traceback
-    traceback.print_exc()
 
 _tmp = None
 OUT_FD, ERR_FD = 100, 200

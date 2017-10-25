@@ -230,8 +230,10 @@ def select_loop(exit_condition=lambda: True, readers=None, writers=None):
             # of the loop before breaking out of the loop.
             exit = exit_condition()
 
+            open_writers = [writer for writer in writers if writer.fileno() is not None]
+
             # get ready pipes, timeout of 100 ms
-            readable, writable, _ = select.select(readers, writers, (), 0.1)
+            readable, writable, _ = select.select(readers, open_writers, (), 0.1)
 
             for ready in readable:
                 read = ready.read(BUF_LEN)
@@ -246,9 +248,9 @@ def select_loop(exit_condition=lambda: True, readers=None, writers=None):
                 if written == 0:
                     writers.remove(ready)
 
-
-            for writer in writers:
-                writer.open()
+            need_opening = [writer for writer in writers if writer.fileno() is None]
+            for connector in need_opening:
+                connector.open()
 
             # all pipes empty?
             empty = (not readers or not readable) and (not writers or not writable)
