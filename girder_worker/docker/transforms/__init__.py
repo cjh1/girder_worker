@@ -1,8 +1,6 @@
 import sys
-import six
 import uuid
 import os
-import shutil
 import tempfile
 
 from girder_worker_utils.transform import Transform
@@ -56,11 +54,11 @@ class ContainerStdErr(Transform):
 
 class Volume(Transform):
     def __init__(self, host_path, container_path, mode='rw'):
-        self.host_path = host_path
-        self.container_path = container_path
+        self._host_path = host_path
+        self._container_path = container_path
         self.mode = mode
 
-    def transform(self, **kwargs):
+    def _repr_json_(self):
         return {
             self.host_path: {
                 'bind': self.container_path,
@@ -68,54 +66,79 @@ class Volume(Transform):
             }
         }
 
-
-class _TemporaryVolume(Volume):
-    def __init__(self, dir=None):
-        self._dir = dir
-        super(_TemporaryVolume, self).__init__(
-            tempfile.mkdtemp(dir=self._dir),
-            os.path.join(TEMP_VOLUME_MOUNT_PREFIX, uuid.uuid4().hex))
-
-    def cleanup(self):
-        if os.path.exists(self.host_path):
-            shutil.rmtree(self.host_path)
-
-
-class _TemporaryVolumeSingleton(type):
-    def __init__(cls, name, bases, dict):
-        super(_TemporaryVolumeSingleton, cls).__init__(name, bases, dict)
-        cls._instance = None
-
-    def __call__(cls, *args, **kwargs):
-        if cls._instance is None:
-            cls._instance = super(_TemporaryVolumeSingleton, cls).__call__(*args, **kwargs)
-        return cls._instance
-
-
-@six.add_metaclass(_TemporaryVolumeSingleton)
-class TemporaryVolume:
-    # TODO Not sure how we can get this class attribute to the worker side. Maybe
-    # in a header?
-    # Currently setting this will have no effect.
-    dir = None
-
-    def __init__(self):
-        self._instance = None
-
-    def transform(self, temp_volume=None, **kwargs):
-        # We save the runtime instances provide by the task, we delegate to this
-        # instance
-        if temp_volume is not None:
-            self._instance = temp_volume
-        return self._instance.transform(**kwargs)
+    def transform(self, **kwargs):
+        return self.container_path
 
     @property
     def container_path(self):
-        return self._instance.container_path
+        return self._container_path
 
     @property
     def host_path(self):
-        return self._instance.host_path
+        return self._host_path
+
+class _DefaultTemporaryVolume(Volume):
+    def __init__(self):
+        self._dir = dir
+        self._transformed = False
+        super(_DefaultTemporaryVolume, self).__init__(
+            tempfile.mkdtemp(),
+            os.path.join(TEMP_VOLUME_MOUNT_PREFIX, uuid.uuid4().hex))
+
+    def transform(self, temp_volume=None, **kwargs):
+        self._transformed = True
+
+
+class TemporaryVolume(Volume):
+    """
+    This is a class used to represent a temporary volume that will be mounted
+    into a docker container. girder_worker will automatically create one and this
+    utility class can be used to refer to it. The root directory on the host can
+    be configured by pass a value into the constructor and then passing this instance,
+    in the docker_run `volumes` param.
+    """
+    def __init__(self, host_dir=None):
+        """
+        :param host_dir: The root directory on the host to use when creating the
+            the temporary host path.
+        :type host_dir: str
+        """
+        super(TemporaryVolume, self).__init__(None, None)
+        self.host_dir = host_dir
+        self._instance = None
+        self._transformed = False
+
+    def transform(self, temp_volume=None, **kwargs):
+
+        # If not host_dir was provided, i.e. We are the default temporary volume,
+        # we save the runtime instances provide by the task, we delegate to this
+        # instance.
+        if temp_volume is not None and self.host_dir is None:
+            self._instance = temp_volume
+            self._transformed = True
+            return self._instance.transform(**kwargs)
+        else:
+            if not self._transformed:
+                self._transformed = True
+                if self.host_dir is not None and not os.path.exists(self.host_dir):
+                    os.makedirs(self.host_dir)
+                self._host_path = tempfile.mkdtemp(dir=self.host_dir)
+                self._container_path = os.path.join(TEMP_VOLUME_MOUNT_PREFIX, uuid.uuid4().hex)
+            return super(TemporaryVolume, self).transform(**kwargs)
+
+    @property
+    def container_path(self):
+        if self._instance is not None:
+            return self._instance.container_path
+        else:
+            return super(TemporaryVolume, self).container_path
+
+    @property
+    def host_path(self):
+        if self._instance is not None:
+            return self._instance.host_path
+        else:
+            return super(TemporaryVolume, self).host_path
 
 
 class NamedPipeBase(Transform):
